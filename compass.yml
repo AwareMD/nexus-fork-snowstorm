@@ -1,0 +1,22 @@
+name: snowstorm
+id: ari:cloud:compass:33cd2514-a497-4f83-bf9e-390d17c8a10c:component/51b385d0-b47e-409c-87c7-8c74402ec2ec/997eed61-5740-42bb-ab29-a553378917cb
+description: Scalable SNOMED CT Terminology Server using Elasticsearch
+configVersion: 1
+typeId: SERVICE
+fields:
+  tier: 4
+links:
+  - name: null
+    type: REPOSITORY
+    url: https://github.com/AwareMD/snowstorm
+relationships:
+  DEPENDS_ON: []
+labels:
+  - source:github
+customFields:
+  - name: Deployable C3 Service
+    type: boolean
+    value: false
+  - name: business-unit
+    type: single_select
+    value: null
