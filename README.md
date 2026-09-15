@@ -1,3 +1,27 @@
+> **This is the Nexus EMR fork of Snowstorm.** It is upstream
+> [IHTSDO/snowstorm](https://github.com/IHTSDO/snowstorm) at a pinned commit of `develop` plus a
+> short series of FHIR-layer fixes, each of which is sent upstream. Every change is a defect fix
+> or an HTTP door onto storage that already existed, written to be deleted the day upstream
+> provides the same thing. [PATCHES.md](PATCHES.md) lists every carried commit and its upstream
+> status; `nexus/BASE` names the upstream commit the series sits on.
+>
+> - `nexus/main` is the series: upstream base, one commit per fix, one housekeeping commit. It is
+>   rebased onto every upstream advance and force-pushed, so base no long-lived work on it.
+> - `develop` mirrors upstream and is never committed to. Do not use GitHub's "Sync fork" button;
+>   it would merge upstream `develop` into the series.
+> - The container image is built only by the release workflow, on tags `X.Y.Z-develop.<sha>-nexus.N`
+>   (`X.Y.Z` is upstream's declared version, `<sha>` the pinned base, `N` our release on it), with
+>   upstream's own multi-arch Jib configuration, and published to the org container registry.
+>   Nothing is built or published by hand. Consumers pin the image by digest.
+> - Pull requests against upstream are staged on `nexus/fix-<slug>` branches, one fix each, cut
+>   from `develop`. When opening a pull request from a clone, check its base repository first:
+>   GitHub defaults it to upstream.
+> - Built and run with **JDK 25 or newer**: upstream's parent BOM sets `maven.compiler.release=25`,
+>   and an older JDK fails at class load, not at build time.
+>
+> Every fix carries its own tests, each checked to fail when its production change is reverted.
+> Everything below this line is upstream's README, unchanged.
+
 ![Snowstorm Terminology Server](docs/images/SNOWSTORM-logo.svg)
 
 [![Docker](https://img.shields.io/docker/pulls/snomedinternational/snowstorm)](https://hub.docker.com/r/snomedinternational/snowstorm)
