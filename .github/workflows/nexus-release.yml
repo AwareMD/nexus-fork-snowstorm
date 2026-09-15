@@ -1,0 +1,86 @@
+name: Nexus release
+
+# Builds and publishes the fork's container image. Runs ONLY on a release tag of the form
+# X.Y.Z-develop.<sha>-nexus.N: X.Y.Z is the version upstream's pom declares (without -SNAPSHOT),
+# <sha> is the first 8 characters of the upstream base commit named in nexus/BASE, and N counts
+# our releases on that base. Nothing else builds the image; a laptop build is never published.
+#
+# The image is upstream's own Jib definition (multi-arch, amazoncorretto:25), pointed at the org
+# registry. Upstream's own CI does not run here.
+
+on:
+  push:
+    tags:
+      - "[0-9]+.[0-9]+.[0-9]+-develop.[0-9a-f]+-nexus.[0-9]+"
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # the register and the base guard read history
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "25"
+          cache: maven
+
+      - name: Derive the version from the tag and check it against the pom and the base
+        id: version
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF#refs/tags/}"                                  # 12.0.0-develop.d910dcc0-nexus.1
+          declared="${tag%%-develop.*}"                                   # 12.0.0
+          rest="${tag#*-develop.}"                                        # d910dcc0-nexus.1
+          sha="${rest%%-nexus.*}"                                         # d910dcc0
+          pom="$(mvn -q help:evaluate -Dexpression=project.version -DforceStdout)"
+          if [ "${pom%-SNAPSHOT}" != "$declared" ]; then
+            echo "::error::tag says $declared but the pom declares $pom."
+            exit 1
+          fi
+          base="$(awk '{print $1}' nexus/BASE)"
+          if [ "${base:0:${#sha}}" != "$sha" ]; then
+            echo "::error::tag names base $sha but nexus/BASE says ${base:0:8}."
+            exit 1
+          fi
+          git merge-base --is-ancestor "$base" HEAD || { echo "::error::base $base is not an ancestor of this commit."; exit 1; }
+          git fetch -q https://github.com/IHTSDO/snowstorm.git develop
+          git merge-base --is-ancestor "$base" FETCH_HEAD || { echo "::error::base $base is not on upstream develop."; exit 1; }
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: The register must match the series
+        run: |
+          set -euo pipefail
+          nexus/gen-patches.sh
+          if ! git diff --exit-code -- PATCHES.md; then
+            echo "::error::PATCHES.md is stale. Run nexus/gen-patches.sh and commit the result."
+            exit 1
+          fi
+
+      - name: Test (FHIR layer)
+        run: mvn -B test -Dtest='org.snomed.snowstorm.fhir.**' -DfailIfNoTests=false
+
+      - name: Build and publish the image
+        # Upstream's Jib configuration as-is: platforms arm64 + amd64, its jvmFlags and layout, so
+        # the image is a drop-in for snomedinternational/snowstorm. Only the destination changes.
+        # The tag is the release tag; consumers pin the digest Jib prints.
+        env:
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+          image="ghcr.io/${OWNER,,}/snowstorm:${{ steps.version.outputs.tag }}"
+          mvn -B -DskipTests package jib:build \
+            -Djib.to.image="$image" \
+            -Djib.to.auth.username="${{ github.actor }}" \
+            -Djib.to.auth.password="${{ secrets.GITHUB_TOKEN }}" \
+            -Djib.container.labels="org.opencontainers.image.source=https://github.com/${{ github.repository }},org.opencontainers.image.revision=${{ github.sha }},org.opencontainers.image.version=${{ steps.version.outputs.tag }}" \
+            -Djib.outputPaths.digest=image-digest.txt
+          echo "published $image @ $(cat image-digest.txt)"
+          echo "### $image" >> "$GITHUB_STEP_SUMMARY"
+          echo "digest: $(cat image-digest.txt)" >> "$GITHUB_STEP_SUMMARY"
