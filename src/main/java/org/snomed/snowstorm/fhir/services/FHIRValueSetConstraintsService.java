@@ -204,7 +204,7 @@ public class FHIRValueSetConstraintsService implements FHIRConstants {
 
 			Set<ConceptConstraint> constraints = switch (getCodeSystemType(codeSystemVersion)) {
 				case SNOMED -> handleSnomedFilter(filter.getProperty(), filter.getOp(), value, codeSystemVersion, activeOnly);
-				case LOINC -> handleLoincFilter(filter.getProperty(), filter.getOp(), value);
+				case LOINC -> handleLoincFilter(filter.getProperty(), filter.getOp(), value, activeOnly);
 				case ICD -> handleICDFilter();
 				default -> handleGenericFilter(filter.getProperty(), filter.getOp(), value, activeOnly);
 			};
@@ -299,7 +299,7 @@ public class FHIRValueSetConstraintsService implements FHIRConstants {
 	}
 
 	// --- LOINC helpers ---
-	private Set<ConceptConstraint> handleLoincFilter(String property, ValueSet.FilterOperator op, String value) {
+	private Set<ConceptConstraint> handleLoincFilter(String property, ValueSet.FilterOperator op, String value, boolean activeOnly) {
 		if (Strings.isNullOrEmpty(value)) {
 			throw exception("Value missing for LOINC ValueSet filter", OperationOutcome.IssueType.INVALID, 400);
 		}
@@ -308,7 +308,11 @@ public class FHIRValueSetConstraintsService implements FHIRConstants {
 		return switch (property) {
 			case "parent" -> Set.of(new ConceptConstraint().setParent(values));
 			case "ancestor" -> Set.of(new ConceptConstraint().setAncestor(values));
-			default -> throw exception("This server does not support ValueSet filter using LOINC property '" + property + "'. Only parent and ancestor supported.", OperationOutcome.IssueType.NOTSUPPORTED, 400);
+			// Every other LOINC property (SCALE_TYP, CLASS, SYSTEM, STATUS, ...) is stored on the
+			// concept the same way any FHIR-native code system's properties are, so the generic
+			// handler answers for it. Refusing here left "SCALE_TYP = Ord" -- the shape the base
+			// FHIR spec uses for LOINC value sets -- unanswerable on a server that had the data.
+			default -> handleGenericFilter(property, op, value, activeOnly);
 		};
 	}
 
