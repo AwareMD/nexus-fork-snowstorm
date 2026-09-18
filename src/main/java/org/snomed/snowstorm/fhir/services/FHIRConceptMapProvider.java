@@ -195,6 +195,11 @@ public class FHIRConceptMapProvider implements IResourceProvider, FHIRConstants 
 				for (FHIRMapTarget mapTarget : mapElement.getTarget()) {
 					if (mapElement.getMessage() != null) {
 						parameters.addParameter("message", mapElement.getMessage());
+					} else if (mapTarget.getComment() != null) {
+						// A stored map's advice lives on the target (ConceptMap.group.element.target.comment) and
+						// is kept on store, but was never returned: a caller saw two targets and no way to choose.
+						// Reported the way the implicit SNOMED maps report theirs, as a message before the match.
+						parameters.addParameter("message", mapTarget.getComment());
 					}
 					parameters.addParameter(buildMatchParam(map, mapTarget, targetSystem));
 				}
