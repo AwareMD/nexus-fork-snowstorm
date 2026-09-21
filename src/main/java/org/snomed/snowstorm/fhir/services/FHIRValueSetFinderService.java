@@ -97,8 +97,9 @@ public class FHIRValueSetFinderService implements FHIRConstants, TxResourceAware
 	public Optional<FHIRValueSet> find(String url, String version) {
 		List<FHIRValueSet> allByUrl = valueSetRepository.findAllByUrl(url);
 
-		// Sort to get "latest" version first if version param is null
-		allByUrl.sort(Comparator.comparing(FHIRValueSet::getVersion).reversed());
+		// Sort to get "latest" version first if version param is null. A stored value set may have
+		// no version at all; it sorts below every versioned copy of the same url.
+		allByUrl.sort(Comparator.comparing(FHIRValueSet::getVersion, Comparator.nullsLast(Comparator.reverseOrder())));
 
 		for (FHIRValueSet valueSet : allByUrl) {
 			if (version == null || version.equals(valueSet.getVersion())) {
