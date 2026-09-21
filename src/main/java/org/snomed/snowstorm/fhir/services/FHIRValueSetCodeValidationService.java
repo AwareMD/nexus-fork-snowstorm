@@ -20,6 +20,7 @@ import org.springframework.stereotype.Service;
 
 import java.util.*;
 import java.util.stream.Collectors;
+import java.util.stream.IntStream;
 import java.util.stream.Stream;
 
 import static co.elastic.clients.elasticsearch._types.query_dsl.QueryBuilders.bool;
@@ -139,9 +140,36 @@ public class FHIRValueSetCodeValidationService implements TxResourceAware {
 			throw new SnowstormFHIRServerResponseException(404, e.getMessage(),oo);
 		}
 
+		// Every coding is looked up before any is reported: a CodeableConcept is valid when any one
+		// of its codings is in the value set, so a coding that is not in it is a failure only when
+		// no other coding is, and the coding echoed back is the one that matched.
+		List<FHIRConcept> concepts = new ArrayList<>();
+		for (Coding coding : codings) {
+			concepts.add(vsFinderService.findInValueSet(coding, resolvedCodeSystemVersionsMatchingCodings, codeSelectionCriteria, languageDialects));
+		}
+		int firstFound = IntStream.range(0, concepts.size()).filter(i -> concepts.get(i) != null).findFirst().orElse(-1);
+		if (firstFound > 0) {
+			Coding found = codings.get(firstFound);
+			response.setParameter(CODE, found.getCodeElement());
+			if (found.getSystem() != null) {
+				response.setParameter(SYSTEM, found.getSystemElement());
+			}
+		}
+
 		List<OperationOutcome.OperationOutcomeIssueComponent> issues = new ArrayList<>();
 		for (int i = 0; i < codings.size(); i++) {
-			validateCodingInValueSet(i, codings, response, issues, resolvedCodeSystemVersionsMatchingCodings, codeSelectionCriteria, languageDialects, request, hapiValueSet);
+			Coding coding = codings.get(i);
+			FHIRConcept concept = concepts.get(i);
+			if (concept != null) {
+				if (i == firstFound) {
+					addFoundVersion(response, concept, resolvedCodeSystemVersionsMatchingCodings);
+				}
+				handleConceptFound(i, codings, coding, concept, response, issues, resolvedCodeSystemVersionsMatchingCodings, codeSelectionCriteria, languageDialects, request, hapiValueSet);
+			} else if (firstFound >= 0) {
+				addThisCodeNotInValueSetIssue(i, coding, issues, request, hapiValueSet);
+			} else {
+				handleConceptNotFound(i, codings, coding, response, issues, resolvedCodeSystemVersionsMatchingCodings, request, hapiValueSet);
+			}
 		}
 
 		// Add any version-check issues collected during constraint generation
@@ -910,25 +938,8 @@ public class FHIRValueSetCodeValidationService implements TxResourceAware {
 		}
 	}
 
-	private void validateCodingInValueSet(int i, List<Coding> codings, Parameters response, List<OperationOutcome.OperationOutcomeIssueComponent> issues, Set<FHIRCodeSystemVersion> resolvedCodeSystemVersionsMatchingCodings, CodeSelectionCriteria codeSelectionCriteria, List<LanguageDialect> languageDialects, FHIRCodeValidationRequest request, ValueSet hapiValueSet) {
-		Coding codingA = codings.get(i);
-		FHIRConcept concept = vsFinderService.findInValueSet(codingA, resolvedCodeSystemVersionsMatchingCodings, codeSelectionCriteria, languageDialects);
-		if (concept != null) {
-			handleConceptFound(i, codings, codingA, concept, response, issues, resolvedCodeSystemVersionsMatchingCodings, codeSelectionCriteria, languageDialects, request, hapiValueSet);
-		} else {
-			handleConceptNotFound(i, codings, codingA, response, issues, resolvedCodeSystemVersionsMatchingCodings, request, hapiValueSet);
-		}
-	}
-
 	private void handleConceptFound(int i, List<Coding> codings, Coding codingA, FHIRConcept concept, Parameters response, List<OperationOutcome.OperationOutcomeIssueComponent> issues, Set<FHIRCodeSystemVersion> resolvedCodeSystemVersionsMatchingCodings, CodeSelectionCriteria codeSelectionCriteria, List<LanguageDialect> languageDialects, FHIRCodeValidationRequest request, ValueSet hapiValueSet) {
 		enrichWithSupplementDesignations(concept, hapiValueSet, resolvedCodeSystemVersionsMatchingCodings);
-		// Report the version of the CS where the code was actually found.
-		// When resolvedCodeSystemVersionsMatchingCodings has multiple entries (mixed VS with the same system
-		// at different versions), use concept.getCodeSystemVersion() (the ES document ID) to identify the
-		// correct FHIRCodeSystemVersion rather than taking a non-deterministic iterator().next().
-		if (codings.size() == 1) {
-			addFoundVersion(response, concept, resolvedCodeSystemVersionsMatchingCodings);
-		}
 		if (handleInactiveConcept(codingA, concept, response, issues, request, hapiValueSet)) {
 			return;
 		}
@@ -944,6 +955,10 @@ public class FHIRValueSetCodeValidationService implements TxResourceAware {
 		}
 	}
 
+	// Report the version of the CS where the code was actually found.
+	// When resolvedCodeSystemVersionsMatchingCodings has multiple entries (mixed VS with the same system
+	// at different versions), use concept.getCodeSystemVersion() (the ES document ID) to identify the
+	// correct FHIRCodeSystemVersion rather than taking a non-deterministic iterator().next().
 	private void addFoundVersion(Parameters response, FHIRConcept concept, Set<FHIRCodeSystemVersion> resolvedCodeSystemVersionsMatchingCodings) {
 		String conceptCsVersionId = concept.getCodeSystemVersion();
 		FHIRCodeSystemVersion foundInVersion = resolvedCodeSystemVersionsMatchingCodings.stream()
@@ -1223,14 +1238,8 @@ public class FHIRValueSetCodeValidationService implements TxResourceAware {
 		codeParameters.forEach(v -> response.removeChild(PARAMETER, v));
 		List<Parameters.ParametersParameterComponent> systemParameters = new ArrayList<>(response.getParameters(SYSTEM));
 		systemParameters.forEach(v -> response.removeChild(PARAMETER, v));
-		String locationExpression = "CodeableConcept.coding[" + i + "].code";
+		String locationExpression = addThisCodeNotInValueSetIssue(i, codingA, issues, request, hapiValueSet);
 		String text;
-		if(DEFAULT_VERSION.equals(hapiValueSet.getVersion())) {
-			text = format(SYSTEM_CODE_NOT_IN_VS, codingA.getSystem(), codingA.getCode(), hapiValueSet.getUrl());
-		} else {
-			text = format("The provided code '%s#%s' was not found in the value set '%s|%s'", codingA.getSystem(), codingA.getCode(), hapiValueSet.getUrl(), hapiValueSet.getVersion());
-		}
-		issues.add(createOperationOutcomeIssueComponent(new CodeableConcept().addCoding(new Coding(TX_ISSUE_TYPE, "this-code-not-in-vs", null)).setText(text), OperationOutcome.IssueSeverity.INFORMATION, locationExpression, OperationOutcome.IssueType.CODEINVALID, null, null));
 		Coding finalCodingA = codingA;
 		boolean codeSystemIncludesConcept = resolvedCodeSystemVersionsMatchingCodings.stream().anyMatch(codeSystem -> codeSystemIncludesConcept(codeSystem, finalCodingA));
 		if(codeSystemIncludesConcept) {
@@ -1251,6 +1260,21 @@ public class FHIRValueSetCodeValidationService implements TxResourceAware {
 		}
 		String message = format("No valid coding was found for the value set '%s'; The provided code '%s#%s' was not found in the value set '%s'",  hapiValueSet.getUrl(), codingA.getSystem(), codingA.getCode(), hapiValueSet.getUrl());
 		return new NotFoundResult(locationExpression, message);
+	}
+
+	// One coding of several that is not in the value set: information, located at that coding.
+	// It is the whole story when another coding is in the value set, and the first part of it
+	// when none is.
+	private static String addThisCodeNotInValueSetIssue(int i, Coding codingA, List<OperationOutcome.OperationOutcomeIssueComponent> issues, FHIRCodeValidationRequest request, ValueSet hapiValueSet) {
+		String locationExpression = request.getCodeableConcept() != null ? "CodeableConcept.coding[" + i + "].code" : CODING_CODE;
+		String text;
+		if(DEFAULT_VERSION.equals(hapiValueSet.getVersion())) {
+			text = format(SYSTEM_CODE_NOT_IN_VS, codingA.getSystem(), codingA.getCode(), hapiValueSet.getUrl());
+		} else {
+			text = format("The provided code '%s#%s' was not found in the value set '%s|%s'", codingA.getSystem(), codingA.getCode(), hapiValueSet.getUrl(), hapiValueSet.getVersion());
+		}
+		issues.add(createOperationOutcomeIssueComponent(new CodeableConcept().addCoding(new Coding(TX_ISSUE_TYPE, "this-code-not-in-vs", null)).setText(text), OperationOutcome.IssueSeverity.INFORMATION, locationExpression, OperationOutcome.IssueType.CODEINVALID, null, null));
+		return locationExpression;
 	}
 
 	private NotFoundResult handleCodingNotFound(Coding codingA, List<OperationOutcome.OperationOutcomeIssueComponent> issues, Set<FHIRCodeSystemVersion> resolvedCodeSystemVersionsMatchingCodings, FHIRCodeValidationRequest request, ValueSet hapiValueSet) {
