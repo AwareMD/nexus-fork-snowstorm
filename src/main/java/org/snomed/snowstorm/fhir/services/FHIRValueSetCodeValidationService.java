@@ -79,6 +79,7 @@ public class FHIRValueSetCodeValidationService implements TxResourceAware {
 	public Parameters validate(FHIRCodeValidationRequest request) {
 
 		validateRequestParameters(request);
+		inferValueSetFromCodings(request);
 
 		ValueSet hapiValueSet = initialValueSetRecovery(request);
 
@@ -1458,6 +1459,28 @@ public class FHIRValueSetCodeValidationService implements TxResourceAware {
 		requireExactlyOneOf(CODE, request.getCode(), CODING, request.getCoding(), CODEABLE_CONCEPT, request.getCodeableConcept());
 		mutuallyRequired(CODE, request.getCode(), SYSTEM, request.getSystem(), "inferSystem", request.getInferSystem());
 		mutuallyRequired(DISPLAY, request.getDisplay(), CODE, request.getCode(), CODING, request.getCoding());
+	}
+
+	// A request that names no value set (no id, url or valueSet) is validated against the code
+	// system of its codings, that is the implicit "all codes" value set <system>?fhir_vs. That is the
+	// shape a validator sends for an unbound CodeableConcept. Codings from several systems are
+	// validated against a value set that includes each of them; a coding with no system leaves
+	// nothing to infer from.
+	private static void inferValueSetFromCodings(FHIRCodeValidationRequest request) {
+		if (request.getId() != null || request.getUrl() != null || request.getValueSet() != null) {
+			return;
+		}
+		List<String> systems = getCodings(request).stream().map(Coding::getSystem).filter(Objects::nonNull).distinct().toList();
+		if (systems.isEmpty()) {
+			throw exception("No value set was identified (url, id or valueSet) and the coding has no system to infer one from.", OperationOutcome.IssueType.INVALID, 400);
+		}
+		if (systems.size() == 1) {
+			request.withUrl(new UriType(systems.get(0) + FHIR_VS));
+		} else {
+			ValueSet valueSet = new ValueSet();
+			systems.forEach(system -> valueSet.getCompose().addInclude().setSystem(system));
+			request.withValueSet(valueSet);
+		}
 	}
 
 	private static void setResultTrueIfNotFalseAlready(Parameters response) {
