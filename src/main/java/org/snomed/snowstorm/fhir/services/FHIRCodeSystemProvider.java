@@ -325,11 +325,12 @@ public class FHIRCodeSystemProvider implements IResourceProvider, FHIRConstants,
 			@OperationParam(name="version") StringType version,
 			@OperationParam(name="date") DateTimeType date,
 			@OperationParam(name="coding") Coding coding,
+			@OperationParam(name="codeableConcept") CodeableConcept codeableConcept,
 			@OperationParam(name="displayLanguage") String displayLanguage) {
 
 		notSupported("codeSystem", codeSystem);
 		notSupported("date", date);
-		mutuallyExclusive("code", code, "coding", coding);
+		requireExactlyOneOf("code", code, "coding", coding, CODEABLE_CONCEPT, codeableConcept);
 		mutuallyRequired(PARAM_DISPLAY, display, "code", code, "coding", coding);
 		if (request.getMethod().equals(RequestMethod.POST.name())) {
 			// HAPI doesn't populate the OperationParam values for POST, we parse the body instead.
@@ -339,6 +340,9 @@ public class FHIRCodeSystemProvider implements IResourceProvider, FHIRConstants,
 		try {
             // Accept 'system' as an alias for 'url' (used by some clients for CodeSystem/$validate-code)
             UriType resolvedUrl = url != null ? url : system;
+            if (codeableConcept != null) {
+                return validateCodeableConcept(null, resolvedUrl, version, codeableConcept, request.getHeader(ACCEPT_LANGUAGE_HEADER));
+            }
             FHIRCodeSystemVersionParams codeSystemParams = getCodeSystemVersionParams(null, resolvedUrl, version, coding);
             return validateCode(codeSystemParams, fhirHelper.recoverCode(code, coding), display, request.getHeader(ACCEPT_LANGUAGE_HEADER));
 		} finally {
@@ -359,10 +363,43 @@ public class FHIRCodeSystemProvider implements IResourceProvider, FHIRConstants,
 			@OperationParam(name="version") StringType version,
 			@OperationParam(name="date") DateTimeType date,
 			@OperationParam(name="coding") Coding coding,
+			@OperationParam(name="codeableConcept") CodeableConcept codeableConcept,
 			@OperationParam(name="displayLanguage") String displayLanguage) {
 
+		requireExactlyOneOf("code", code, "coding", coding, CODEABLE_CONCEPT, codeableConcept);
+		if (codeableConcept != null) {
+			return validateCodeableConcept(id, url, version, codeableConcept, request.getHeader(ACCEPT_LANGUAGE_HEADER));
+		}
 		FHIRCodeSystemVersionParams codeSystemParams = getCodeSystemVersionParams(id, url, version, coding);
 		return validateCode(codeSystemParams, fhirHelper.recoverCode(code, coding), display, request.getHeader(ACCEPT_LANGUAGE_HEADER));
+	}
+
+	// A CodeableConcept is valid when any one of its codings is a code of the addressed code
+	// system: the url parameter, the instance id, or failing both each coding's own system. A
+	// coding from another system is not the addressed system's to judge and is passed over. The
+	// response is that of the first valid coding, or of the last coding tried when none is.
+	private Parameters validateCodeableConcept(IdType id, UriType url, StringType version, CodeableConcept codeableConcept, String acceptLanguageHeader) {
+		if (id != null && url == null) {
+			url = new UriType(fhirCodeSystemService.findCodeSystemVersionOrThrow(getCodeSystemVersionParams(id, null, version, null)).getUrl());
+		}
+		Parameters response = null;
+		for (Coding coding : codeableConcept.getCoding()) {
+			if (url != null && coding.hasSystem() && !url.getValue().equals(coding.getSystem())) {
+				continue;
+			}
+			response = validateCode(getCodeSystemVersionParams(id, url, version, coding), coding.getCode(), coding.getDisplay(), acceptLanguageHeader);
+			if (response.getParameterBool(RESULT)) {
+				break;
+			}
+		}
+		if (response == null) {
+			response = new Parameters();
+			response.addParameter(RESULT, false);
+			response.addParameter(MESSAGE, url == null ? "The codeableConcept has no coding to validate."
+					: format("No coding of the codeableConcept is from the code system '%s'.", url.getValue()));
+		}
+		response.getParameter().add(0, new Parameters.ParametersParameterComponent(new StringType(CODEABLE_CONCEPT)).setValue(codeableConcept));
+		return response;
 	}
 
 	private Parameters validateCode(
