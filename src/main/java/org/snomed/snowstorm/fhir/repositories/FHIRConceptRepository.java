@@ -10,8 +10,6 @@ import java.util.List;
 
 public interface FHIRConceptRepository extends ElasticsearchRepository<FHIRConcept, String> {
 
-	FHIRConcept findFirstByCodeSystemVersionAndCode(String codeSystemVersion, String code);
-
 	Page<FHIRConcept> findByCodeSystemVersionAndCodeIn(String codeSystemVersion, Collection<String> code, Pageable pageable);
 
 	Page<FHIRConcept> findByCodeSystemVersion(String codeSystemVersionIdAndVersion, Pageable page);
