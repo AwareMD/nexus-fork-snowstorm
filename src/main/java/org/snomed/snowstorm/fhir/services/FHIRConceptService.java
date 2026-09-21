@@ -196,7 +196,13 @@ public class FHIRConceptService {
 	}
 
 	public FHIRConcept findConcept(FHIRCodeSystemVersion systemVersion, String code) {
-		return conceptRepository.findFirstByCodeSystemVersionAndCode(systemVersion.getId(), code);
+		// A term query, not a derived repository query: that one goes through query_string, which
+		// reads a code of AND, OR or NOT as an operator and fails to parse. code is a keyword
+		// field, so the code is matched whole.
+		BoolQuery.Builder query = new BoolQuery.Builder()
+				.must(new TermQuery.Builder().field(FHIRConcept.Fields.CODE_SYSTEM_VERSION).value(systemVersion.getId()).build()._toQuery())
+				.must(new TermQuery.Builder().field(FHIRConcept.Fields.CODE).value(code).build()._toQuery());
+		return findConcepts(query, PageRequest.of(0, 1)).stream().findFirst().orElse(null);
 	}
 
 	public Page<FHIRConcept> findConcepts(BoolQuery.Builder fhirConceptQuery, PageRequest pageRequest) {
