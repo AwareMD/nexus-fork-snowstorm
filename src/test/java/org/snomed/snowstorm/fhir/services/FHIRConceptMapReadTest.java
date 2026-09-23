@@ -95,6 +95,27 @@ class FHIRConceptMapReadTest extends AbstractFHIRTest {
 	}
 
 	@Test
+	void aMapLargerThanOneSearchPageIsReadWhole() {
+		// Elasticsearch answers at most index.max_result_window (10,000) hits from one search.
+		String url = "http://example.com/fhir/ConceptMap/read-large";
+		int size = 12_000;
+		StringBuilder elements = new StringBuilder();
+		for (int i = 0; i < size; i++) {
+			elements.append(i == 0 ? "" : ",").append("{\"code\":\"L").append(i).append("\",\"target\":[{\"code\":\"T").append(i)
+					.append("\",\"equivalence\":\"equivalent\"}]}");
+		}
+		String json = "{\"resourceType\":\"ConceptMap\",\"id\":\"read-large\",\"url\":\"" + url + "\",\"version\":\"1\",\"status\":\"active\","
+				+ "\"group\":[{\"source\":\"" + SOURCE + "\",\"target\":\"" + TARGET + "\",\"element\":[" + elements + "]}]}";
+		ResponseEntity<String> response = restTemplate.exchange(baseUrl + "/ConceptMap/read-large", HttpMethod.PUT, new HttpEntity<>(json, headers), String.class);
+		assertTrue(response.getStatusCode().is2xxSuccessful(), response.getBody());
+
+		ConceptMap read = read("read-large");
+		List<ConceptMap.SourceElementComponent> readElements = read.getGroupFirstRep().getElement();
+		assertEquals(size, readElements.size());
+		assertEquals(size, readElements.stream().map(ConceptMap.SourceElementComponent::getCode).distinct().count());
+	}
+
+	@Test
 	void anUnknownIdIsNotFound() {
 		assertEquals(HttpStatus.NOT_FOUND, get("/ConceptMap/read-never-stored").getStatusCode());
 	}

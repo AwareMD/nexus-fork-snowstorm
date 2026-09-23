@@ -7,11 +7,8 @@ import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 
 import java.util.Collection;
-import java.util.List;
 
 public interface FHIRMapElementRepository extends ElasticsearchRepository<FHIRMapElement, String> {
-
-	List<FHIRMapElement> findAllByGroupId(String groupId);
 
 	Page<FHIRMapElement> findByGroupIdIn(Collection<String> groupIds, Pageable pageable);
 
