@@ -85,7 +85,9 @@ public class FHIRConceptMap {
 
 	public FHIRConceptMap(ConceptMap hapiConceptMap) {
 		this();
-		id = hapiConceptMap.getId();
+		// The id part alone. On a PUT, HAPI binds the request id onto the resource, so getId() is the
+		// qualified "ConceptMap/<id>"; stored under that, the map could not be read back by its id.
+		id = hapiConceptMap.getIdElement().getIdPart();
 		url = hapiConceptMap.getUrl();
 		Identifier hapiIdentifier = hapiConceptMap.getIdentifier();
 		if (hapiIdentifier != null) {
