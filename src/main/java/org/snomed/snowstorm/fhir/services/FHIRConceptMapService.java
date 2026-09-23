@@ -2,6 +2,7 @@ package org.snomed.snowstorm.fhir.services;
 
 
 import co.elastic.clients.elasticsearch._types.query_dsl.BoolQuery;
+import com.google.common.collect.Lists;
 import org.hl7.fhir.r4.model.Coding;
 import org.hl7.fhir.r4.model.Enumerations;
 import org.hl7.fhir.r4.model.IdType;
@@ -94,6 +95,16 @@ public class FHIRConceptMapService {
 		snomedCorrelationToFhirEquivalenceMap = implicitMapConfig.getSnomedCorrelationToFhirEquivalenceMap();
 	}
 
+	/**
+	 * Map elements are written and deleted this many at a time. A group's elements used to go to
+	 * Elasticsearch in one bulk request, and a large map is larger than the request body Elasticsearch
+	 * accepts (http.max_content_length, 100 MB by default): Health Canada's licence-to-ingredient map
+	 * is one group of 153,003 elements and about 110 MB as FHIR JSON, and was refused with HTTP 413.
+	 * Its elements average 720 bytes and reach 55 KB; the largest 5,000 consecutive ones come to about
+	 * 6 MB, so a batch of 5,000 stays an order of magnitude under the limit on that map.
+	 */
+	private static final int MAP_ELEMENT_BATCH_SIZE = 5_000;
+
 	public FHIRConceptMap createOrUpdate(FHIRConceptMap conceptMap) {
 		// FHIR ConceptMap canonical is `url|version` and both are required for persistence.
 		String url = conceptMap.getUrl();
@@ -110,26 +121,58 @@ public class FHIRConceptMapService {
 			throw exception("ConceptMap url must not contain 'fhir_cm', this is reserved for implicit concept maps.", OperationOutcome.IssueType.INVARIANT, 400);
 		}
 
-		// Delete existing maps with the same URL and version
-		conceptMapRepository.findAllByUrl(conceptMap.getUrl())
-				.stream().filter(map -> conceptMap.getVersion().equals(map.getVersion()))
-						.forEach(map -> {
-							// Delete map group elements
-							for (FHIRConceptMapGroup mapGroup : map.getGroup()) {
-								if (mapGroup.getElement() != null) {
-									mapElementRepository.deleteAll(mapGroup.getElement());
-								}
-							}
-							conceptMapRepository.delete(map);
-						});
+		List<FHIRConceptMap> previous = conceptMapRepository.findAllByUrl(url).stream()
+				.filter(map -> version.equals(map.getVersion()))
+				.toList();
 
-		// Save concept map and groups
-		FHIRConceptMap saved = conceptMapRepository.save(conceptMap);
-		for (FHIRConceptMapGroup mapGroup : conceptMap.getGroup()) {
-			// Save elements within each group
-			mapElementRepository.saveAll(mapGroup.getElement());
+		// The new elements are written before anything else changes, under the new map's own group ids,
+		// which nothing reads until its header is saved. If the write fails the previous map is still
+		// whole and still answering; the new elements are removed and the failure reported.
+		List<String> newGroupIds = orEmpty(conceptMap.getGroup()).stream().map(FHIRConceptMapGroup::getGroupId).toList();
+		FHIRConceptMap saved;
+		try {
+			for (FHIRConceptMapGroup mapGroup : orEmpty(conceptMap.getGroup())) {
+				saveElementsInBatches(orEmpty(mapGroup.getElement()));
+			}
+			saved = conceptMapRepository.save(conceptMap);
+		} catch (RuntimeException e) {
+			try {
+				deleteElementsOfGroups(newGroupIds);
+			} catch (RuntimeException cleanup) {
+				e.addSuppressed(cleanup);
+			}
+			throw e;
+		}
+
+		// Only then retire the copies this one replaces: the header first, so that a failure part way
+		// leaves elements nothing refers to, never a map whose elements have gone. A copy stored under the
+		// same id has already been overwritten by the save. Its elements are found by group id: a stored
+		// header does not carry them.
+		for (FHIRConceptMap old : previous) {
+			if (!old.getId().equals(saved.getId())) {
+				conceptMapRepository.delete(old);
+			}
+			deleteElementsOfGroups(orEmpty(old.getGroup()).stream().map(FHIRConceptMapGroup::getGroupId)
+					.filter(groupId -> !newGroupIds.contains(groupId)).toList());
 		}
 		return saved;
+	}
+
+	private void saveElementsInBatches(List<FHIRMapElement> elements) {
+		for (List<FHIRMapElement> batch : Lists.partition(elements, MAP_ELEMENT_BATCH_SIZE)) {
+			mapElementRepository.saveAll(batch);
+		}
+	}
+
+	private void deleteElementsOfGroups(Collection<String> groupIds) {
+		if (groupIds.isEmpty()) {
+			return;
+		}
+		Page<FHIRMapElement> page = mapElementRepository.findByGroupIdIn(groupIds, PageRequest.of(0, MAP_ELEMENT_BATCH_SIZE));
+		while (!page.isEmpty()) {
+			mapElementRepository.deleteAll(page.getContent());
+			page = mapElementRepository.findByGroupIdIn(groupIds, PageRequest.of(0, MAP_ELEMENT_BATCH_SIZE));
+		}
 	}
 
 	public FHIRConceptMap findByIdWithGroups(String idPart) {
