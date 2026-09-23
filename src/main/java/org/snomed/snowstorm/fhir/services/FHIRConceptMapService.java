@@ -158,6 +158,29 @@ public class FHIRConceptMapService {
 		return saved;
 	}
 
+	/**
+	 * The stored maps a delete addresses: the one stored under this id, or every copy stored at this
+	 * url and version. An id names exactly one stored resource, whatever its version.
+	 *
+	 * A map stored through PUT or POST is kept under the id HAPI hands over, which carries the type,
+	 * "ConceptMap/abc", while a client addresses it, and sees it listed, as "abc". So an id that is not
+	 * stored as given is looked up with the type prefixed.
+	 */
+	public List<FHIRConceptMap> findStored(String id, String url, String version) {
+		if (id != null) {
+			return conceptMapRepository.findById(id)
+					.or(() -> conceptMapRepository.findById("ConceptMap/" + id))
+					.stream().toList();
+		}
+		return conceptMapRepository.findAllByUrl(url).stream().filter(map -> version.equals(map.getVersion())).toList();
+	}
+
+	/** Delete a stored map: its header first, so a failure part way never leaves a map without its elements. */
+	public void delete(FHIRConceptMap map) {
+		conceptMapRepository.delete(map);
+		deleteElementsOfGroups(orEmpty(map.getGroup()).stream().map(FHIRConceptMapGroup::getGroupId).toList());
+	}
+
 	private void saveElementsInBatches(List<FHIRMapElement> elements) {
 		for (List<FHIRMapElement> batch : Lists.partition(elements, MAP_ELEMENT_BATCH_SIZE)) {
 			mapElementRepository.saveAll(batch);

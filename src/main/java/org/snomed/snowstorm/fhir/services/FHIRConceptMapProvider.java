@@ -60,6 +60,34 @@ public class FHIRConceptMapProvider implements IResourceProvider, FHIRConstants 
 		return createUpdateConceptMap(id, conceptMap);
 	}
 
+	/**
+	 * Delete a stored ConceptMap, by id or by url and version, with every element stored under it.
+	 * An id addresses exactly the resource stored under it. A map that is not stored, including the
+	 * generated SNOMED CT maps, answers 404.
+	 */
+	@Delete
+	public MethodOutcome deleteConceptMap(
+			@IdParam IdType id,
+			@OptionalParam(name="url") UriType url,
+			@OptionalParam(name="version") String version) {
+
+		FHIRHelper.readOnlyCheck(readOnlyMode);
+		String idPart = id != null && id.hasIdPart() ? id.getIdPart() : null;
+		if (idPart == null) {
+			FHIRHelper.required("url", url);
+			FHIRHelper.required("version", version);
+		}
+		List<FHIRConceptMap> maps = service.findStored(idPart, url != null ? url.getValueAsString() : null, version);
+		if (maps.isEmpty()) {
+			throw exception(idPart != null ? format("ConceptMap '%s' not found.", idPart) :
+					format("ConceptMap '%s|%s' not found.", url.getValueAsString(), version), IssueType.NOTFOUND, 404);
+		}
+		maps.forEach(service::delete);
+		MethodOutcome outcome = new MethodOutcome();
+		outcome.setId(new IdType("ConceptMap", maps.getFirst().getId(), maps.getFirst().getVersion()));
+		return outcome;
+	}
+
 	//See https://www.hl7.org/fhir/conceptmap.html#search
 	@Search
 	public List<ConceptMap> findConceptMaps(
