@@ -7,7 +7,9 @@ import org.springframework.data.elasticsearch.annotations.FieldType;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import static org.snomed.snowstorm.core.util.CollectionUtils.orEmpty;
 
@@ -60,16 +62,21 @@ public class FHIRValueSetCriteria {
 		ValueSet.ConceptSetComponent hapiConceptSet = new ValueSet.ConceptSetComponent();
 		hapiConceptSet.setSystem(system);
 		hapiConceptSet.setVersion(version);
+		// The references are indexed by code once rather than scanned once per code: a scan per code is
+		// quadratic, and this runs on every read of a stored value set, so an enumerated include of
+		// 118,000 codes took minutes to read. Each list keeps the references' original order, so a code
+		// listed more than once still collects every matching reference's extensions and designations,
+		// in the order it did before.
+		Map<String, List<FHIRValueSetCriteriaConcept>> referencesByCode = new HashMap<>();
+		for (FHIRValueSetCriteriaConcept reference : orEmpty(conceptReferences)) {
+			referencesByCode.computeIfAbsent(reference.getCode(), k -> new ArrayList<>()).add(reference);
+		}
 		for (String code : orEmpty(codes)) {
 			ValueSet.ConceptReferenceComponent component = new ValueSet.ConceptReferenceComponent();
 			component.setCode(code);
-			if (conceptReferences != null) {
-				conceptReferences.stream().filter(x -> code.equals(x.getCode()))
-						.forEach(x -> {
-									Optional.ofNullable(x.getExtensions()).orElse(Collections.emptyList()).forEach(ext -> component.addExtension(ext.getHapi()));
-									Optional.ofNullable(x.getDesignations()).orElse(Collections.emptyList()).forEach(d -> component.addDesignation(d.getHapi()));
-								}
-						);
+			for (FHIRValueSetCriteriaConcept x : referencesByCode.getOrDefault(code, Collections.emptyList())) {
+				Optional.ofNullable(x.getExtensions()).orElse(Collections.emptyList()).forEach(ext -> component.addExtension(ext.getHapi()));
+				Optional.ofNullable(x.getDesignations()).orElse(Collections.emptyList()).forEach(d -> component.addDesignation(d.getHapi()));
 			}
 			hapiConceptSet.addConcept(component);
 		}
