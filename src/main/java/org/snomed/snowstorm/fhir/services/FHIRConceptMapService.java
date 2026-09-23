@@ -26,6 +26,7 @@ import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.elasticsearch.core.ElasticsearchOperations;
 import org.springframework.data.elasticsearch.core.SearchHit;
+import org.springframework.data.elasticsearch.core.SearchHitsIterator;
 import org.springframework.data.elasticsearch.client.elc.NativeQueryBuilder;
 import org.springframework.stereotype.Service;
 
@@ -228,10 +229,24 @@ public class FHIRConceptMapService {
 		FHIRConceptMap map = stored.getFirst();
 		map.setId(idPart);
 		for (FHIRConceptMapGroup group : orEmpty(map.getGroup())) {
-			List<FHIRMapElement> elements = mapElementRepository.findAllByGroupId(group.getGroupId());
-			group.setElement(elements);
+			group.setElement(findAllElementsOfGroup(group.getGroupId()));
 		}
 		return map;
+	}
+
+	/**
+	 * Every element of a group, streamed in batches. Asked for in one search, as they used to be,
+	 * Elasticsearch refuses a group of more than index.max_result_window (10,000 by default) elements.
+	 */
+	private List<FHIRMapElement> findAllElementsOfGroup(String groupId) {
+		List<FHIRMapElement> elements = new ArrayList<>();
+		try (SearchHitsIterator<FHIRMapElement> hits = elasticsearchOperations.searchForStream(new NativeQueryBuilder()
+				.withQuery(termQuery(FHIRMapElement.Fields.GROUP_ID, groupId))
+				.withPageable(PageRequest.of(0, MAP_ELEMENT_BATCH_SIZE))
+				.build(), FHIRMapElement.class)) {
+			hits.forEachRemaining(hit -> elements.add(hit.getContent()));
+		}
+		return elements;
 	}
 
 	/**
