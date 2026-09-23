@@ -121,9 +121,17 @@ public class FHIRConceptMapService {
 			throw exception("ConceptMap url must not contain 'fhir_cm', this is reserved for implicit concept maps.", OperationOutcome.IssueType.INVARIANT, 400);
 		}
 
-		List<FHIRConceptMap> previous = conceptMapRepository.findAllByUrl(url).stream()
+		// The copies this one replaces: those at the same url and version, and whatever is stored under its
+		// id, in either form (see findStoredById), so that a map stored under "ConceptMap/<id>" and PUT
+		// again is replaced rather than left beside the new copy.
+		Map<String, FHIRConceptMap> previousById = new LinkedHashMap<>();
+		conceptMapRepository.findAllByUrl(url).stream()
 				.filter(map -> version.equals(map.getVersion()))
-				.toList();
+				.forEach(map -> previousById.put(map.getId(), map));
+		if (conceptMap.getId() != null) {
+			findStoredById(conceptMap.getId()).forEach(map -> previousById.put(map.getId(), map));
+		}
+		Collection<FHIRConceptMap> previous = previousById.values();
 
 		// The new elements are written before anything else changes, under the new map's own group ids,
 		// which nothing reads until its header is saved. If the write fails the previous map is still
@@ -161,18 +169,25 @@ public class FHIRConceptMapService {
 	/**
 	 * The stored maps a delete addresses: the one stored under this id, or every copy stored at this
 	 * url and version. An id names exactly one stored resource, whatever its version.
-	 *
-	 * A map stored through PUT or POST is kept under the id HAPI hands over, which carries the type,
-	 * "ConceptMap/abc", while a client addresses it, and sees it listed, as "abc". So an id that is not
-	 * stored as given is looked up with the type prefixed.
 	 */
 	public List<FHIRConceptMap> findStored(String id, String url, String version) {
 		if (id != null) {
-			return conceptMapRepository.findById(id)
-					.or(() -> conceptMapRepository.findById("ConceptMap/" + id))
-					.stream().toList();
+			return findStoredById(id).stream().limit(1).toList();
 		}
 		return conceptMapRepository.findAllByUrl(url).stream().filter(map -> version.equals(map.getVersion())).toList();
+	}
+
+	/**
+	 * What is stored under the id a client uses, "abc": the map stored under "abc", then one stored
+	 * under "ConceptMap/abc". Maps stored through PUT used to be kept under the id HAPI hands over,
+	 * which carries the type, while clients see them listed, and address them, as "abc". Every read
+	 * by id resolves through here, so those maps answer by the id they are listed under.
+	 */
+	private List<FHIRConceptMap> findStoredById(String id) {
+		List<FHIRConceptMap> stored = new ArrayList<>(2);
+		conceptMapRepository.findById(id).ifPresent(stored::add);
+		conceptMapRepository.findById("ConceptMap/" + id).ifPresent(stored::add);
+		return stored;
 	}
 
 	/** Delete a stored map: its header first, so a failure part way never leaves a map without its elements. */
@@ -198,18 +213,19 @@ public class FHIRConceptMapService {
 		}
 	}
 
+	/** The map stored under this id, with its elements, and carrying the id as given, however it is stored. */
 	public FHIRConceptMap findByIdWithGroups(String idPart) {
-		Optional<FHIRConceptMap> conceptMap = conceptMapRepository.findById(idPart);
-		if (conceptMap.isPresent()) {
-			FHIRConceptMap map = conceptMap.get();
-			for (FHIRConceptMapGroup group : orEmpty(map.getGroup())) {
-				List<FHIRMapElement> elements = mapElementRepository.findAllByGroupId(group.getGroupId());
-				group.setElement(elements);
-			}
-			return map;
+		List<FHIRConceptMap> stored = findStoredById(idPart);
+		if (stored.isEmpty()) {
+			return null;
 		}
-
-		return null;
+		FHIRConceptMap map = stored.getFirst();
+		map.setId(idPart);
+		for (FHIRConceptMapGroup group : orEmpty(map.getGroup())) {
+			List<FHIRMapElement> elements = mapElementRepository.findAllByGroupId(group.getGroupId());
+			group.setElement(elements);
+		}
+		return map;
 	}
 
 	public List<FHIRConceptMap> findAll() {

@@ -75,7 +75,7 @@ class FHIRConceptMapDeleteTest extends AbstractFHIRTest {
 		assertEquals(HttpStatus.NOT_FOUND, delete("/ConceptMap?url=http://example.com/fhir/ConceptMap/del-never-stored&version=1").getStatusCode());
 	}
 
-	/** The stored header a client calls {@code id}; PUT stores it under "ConceptMap/" + id. */
+	/** The stored header a client calls {@code id}, under that id or, as PUT stored it before, "ConceptMap/" + id. */
 	private Optional<FHIRConceptMap> stored(String id) {
 		return conceptMapRepository.findById(id).or(() -> conceptMapRepository.findById("ConceptMap/" + id));
 	}
