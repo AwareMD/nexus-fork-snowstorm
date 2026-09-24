@@ -30,6 +30,12 @@ public class FHIRProperty {
 	private String value;
 	private String type;
 	private String systemVersionUrl;
+	// The system and version of a Coding value. A Coding-valued property names its own system,
+	// which is usually not the code system carrying the property (a unit from UCUM, a dose form
+	// from a dose-form code system). Absent on properties stored before they were kept, and on
+	// Codings that give no system; the owning code system is returned for those, as before.
+	private String system;
+	private String version;
 
 	public FHIRProperty() {
 	}
@@ -64,6 +70,8 @@ public class FHIRProperty {
 			Coding valueCoding = propertyComponent.getValueCoding();
 			value = valueCoding.getCode();
 			display = valueCoding.getDisplay();
+			system = valueCoding.getSystem();
+			version = valueCoding.getVersion();
 			type = CODING_TYPE;
 		} else if (propertyComponent.hasValueCodeType()) {
 			value = propertyComponent.getValueCodeType().getValue();
@@ -114,7 +122,8 @@ public class FHIRProperty {
 		} else if (CODE_TYPE.equals(type)) {
 			return new CodeType(value);
 		} else if (CODING_TYPE.equals(type)) {
-			return new Coding(systemVersionUrl, value, display);
+			Coding coding = new Coding(system != null ? system : systemVersionUrl, value, display);
+			return version != null ? coding.setVersion(version) : coding;
 		} else if (BOOLEAN_TYPE.equals(type)) {
 			return new BooleanType(value);
 		} else if (INTEGER_TYPE.equals(type)) {
@@ -160,4 +169,12 @@ public class FHIRProperty {
 	public String getSystemVersionUrl() { return systemVersionUrl; }
 
 	public void setSystemVersionUrl(String systemVersionUrl) { this.systemVersionUrl = systemVersionUrl; }
+
+	public String getSystem() { return system; }
+
+	public void setSystem(String system) { this.system = system; }
+
+	public String getVersion() { return version; }
+
+	public void setVersion(String version) { this.version = version; }
 }
