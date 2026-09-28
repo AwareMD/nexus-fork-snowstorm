@@ -205,10 +205,18 @@ public class FHIRConceptService {
 		return findConcepts(query, PageRequest.of(0, 1)).stream().findFirst().orElse(null);
 	}
 
+	/**
+	 * The order of a non-SNOMED expansion. Display length then code is the order clients have always
+	 * been given; the code system version breaks the tie between one code held by two systems. Without
+	 * that last key the order is not total, and a search_after walk can skip a concept that ties
+	 * with the last one of the previous page.
+	 */
+	static final Sort EXPANSION_SORT = Sort.by(FHIRConcept.Fields.DISPLAY_LENGTH, FHIRConcept.Fields.CODE, FHIRConcept.Fields.CODE_SYSTEM_VERSION);
+
 	public Page<FHIRConcept> findConcepts(BoolQuery.Builder fhirConceptQuery, PageRequest pageRequest) {
 		NativeQuery searchQuery = new NativeQueryBuilder()
 				.withQuery(fhirConceptQuery.build()._toQuery())
-				.withSort(Sort.by(FHIRConcept.Fields.DISPLAY_LENGTH, FHIRConcept.Fields.CODE))
+				.withSort(EXPANSION_SORT)
 				.withPageable(pageRequest)
 				.build();
 		searchQuery.setTrackTotalHits(true);
@@ -217,16 +225,20 @@ public class FHIRConceptService {
 		return toPage(elasticsearchOperations.search(searchQuery, FHIRConcept.class), pageRequest);
 	}
 
-	public SearchAfterPage<String> findConceptCodes(BoolQuery fhirConceptQuery, PageRequest pageRequest) {
+	/**
+	 * Walks concepts in {@link #EXPANSION_SORT}, the order the first 10,000 of an expansion are cut from,
+	 * so that a page past 10,000 continues the same sequence rather than starting a different one.
+	 */
+	public SearchAfterPage<FHIRConcept> findConceptsAfter(BoolQuery fhirConceptQuery, PageRequest pageRequest) {
 		NativeQuery searchQuery = new NativeQueryBuilder()
 				.withQuery(fhirConceptQuery._toQuery())
-				.withSort(Sort.by(FHIRConcept.Fields.CODE))
+				.withSort(EXPANSION_SORT)
 				.withPageable(pageRequest)
 				.build();
 		searchQuery.setTrackTotalHits(true);
 		updateQueryWithSearchAfter(searchQuery, pageRequest);
 		SearchHits<FHIRConcept> searchHits = elasticsearchOperations.search(searchQuery, FHIRConcept.class);
-		return PageHelper.toSearchAfterPage(searchHits, FHIRConcept::getCode, pageRequest);
+		return PageHelper.toSearchAfterPage(searchHits, pageRequest);
 	}
 
 
