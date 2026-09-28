@@ -414,49 +414,43 @@ public class FHIRValueSetConstraintsService implements FHIRConstants {
 		return valueSet.getUrl() != null ? valueSet.getUrl() : "inline value set";
 	}
 
-	public Map<FHIRCodeSystemVersion, ConjunctionConstraints> combineConstraints(Map<FHIRCodeSystemVersion, ConjunctionConstraints> constraints) {
-		// This method combines "simple code set" constraints to reduce Elasticsearch clause count.
-		// IMPORTANT: must preserve the AND/OR semantics encoded by ConjunctionConstraints/DisjunctionConstraints.
-		// In particular, moving simple constraints out of their original OR-group changes them
-		// from being OR-ed to being AND-ed by the query builder, which breaks ValueSet filters
-		// like `property=concept op=is-a` (code + descendants).
-		Map<FHIRCodeSystemVersion, ConjunctionConstraints> combinedConstraints = new HashMap<>();
+	/**
+	 * Combines one clause's "simple code set" constraints to reduce Elasticsearch clause count.
+	 * IMPORTANT: must preserve the AND/OR semantics encoded by ConjunctionConstraints/DisjunctionConstraints.
+	 * In particular, moving simple constraints out of their original OR-group changes them
+	 * from being OR-ed to being AND-ed by the query builder, which breaks ValueSet filters
+	 * like `property=concept op=is-a` (code + descendants).
+	 */
+	public ConjunctionConstraints combineConstraints(ConjunctionConstraints conjunctionConstraints) {
+		ConjunctionConstraints newConjunctionConstraints = new ConjunctionConstraints();
 
-		for (Map.Entry<FHIRCodeSystemVersion, ConjunctionConstraints> entry : constraints.entrySet()) {
-			FHIRCodeSystemVersion codeSystemVersion = entry.getKey();
-			ConjunctionConstraints conjunctionConstraints = entry.getValue();
-			ConjunctionConstraints newConjunctionConstraints = new ConjunctionConstraints();
+		for (ConjunctionConstraints.DisjunctionConstraints disjunctionConstraints : conjunctionConstraints.getDisjunctionConstraints()) {
+			// Keep combination within the existing OR-group to preserve semantics.
+			Map<Boolean, Set<String>> simpleCodesByActiveOnlyTrue = new HashMap<>();
+			Set<ConceptConstraint> nonSimpleConstraints = new HashSet<>();
 
-			for (ConjunctionConstraints.DisjunctionConstraints disjunctionConstraints : conjunctionConstraints.getDisjunctionConstraints()) {
-				// Keep combination within the existing OR-group to preserve semantics.
-				Map<Boolean, Set<String>> simpleCodesByActiveOnlyTrue = new HashMap<>();
-				Set<ConceptConstraint> nonSimpleConstraints = new HashSet<>();
-
-				for (ConceptConstraint conceptConstraint : disjunctionConstraints.getConstraints()) {
-					if (conceptConstraint.isSimpleCodeSet()) {
-						boolean activeOnlyTrue = Boolean.TRUE.equals(conceptConstraint.isActiveOnly());
-						simpleCodesByActiveOnlyTrue
-								.computeIfAbsent(activeOnlyTrue, ignored -> new HashSet<>())
-								.addAll(conceptConstraint.getCodes());
-					} else {
-						nonSimpleConstraints.add(conceptConstraint);
-					}
+			for (ConceptConstraint conceptConstraint : disjunctionConstraints.getConstraints()) {
+				if (conceptConstraint.isSimpleCodeSet()) {
+					boolean activeOnlyTrue = Boolean.TRUE.equals(conceptConstraint.isActiveOnly());
+					simpleCodesByActiveOnlyTrue
+							.computeIfAbsent(activeOnlyTrue, ignored -> new HashSet<>())
+							.addAll(conceptConstraint.getCodes());
+				} else {
+					nonSimpleConstraints.add(conceptConstraint);
 				}
-
-				// Re-add combined simple constraints (per effective activeOnly=true/!=true)
-				for (Map.Entry<Boolean, Set<String>> simpleEntry : simpleCodesByActiveOnlyTrue.entrySet()) {
-					ConceptConstraint combinedSimple = new ConceptConstraint(new HashSet<>(simpleEntry.getValue()));
-					combinedSimple.setActiveOnly(simpleEntry.getKey());
-					nonSimpleConstraints.add(combinedSimple);
-				}
-
-				newConjunctionConstraints.addDisjunctionConstraints(nonSimpleConstraints);
 			}
 
-			combinedConstraints.put(codeSystemVersion, newConjunctionConstraints);
+			// Re-add combined simple constraints (per effective activeOnly=true/!=true)
+			for (Map.Entry<Boolean, Set<String>> simpleEntry : simpleCodesByActiveOnlyTrue.entrySet()) {
+				ConceptConstraint combinedSimple = new ConceptConstraint(new HashSet<>(simpleEntry.getValue()));
+				combinedSimple.setActiveOnly(simpleEntry.getKey());
+				nonSimpleConstraints.add(combinedSimple);
+			}
+
+			newConjunctionConstraints.addDisjunctionConstraints(nonSimpleConstraints);
 		}
 
-		return combinedConstraints;
+		return newConjunctionConstraints;
 	}
 
 	public Set<CodeSelectionCriteria> combineConstraints(Set<CodeSelectionCriteria> nestedSelections, String valueSetUserRef) {

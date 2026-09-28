@@ -10,32 +10,41 @@ import java.util.*;
 public class CodeSelectionCriteria {
 
 	private final String valueSetUserRef;
-	private final Map<FHIRCodeSystemVersion, ConjunctionConstraints> inclusionConstraints;
+	// One ConjunctionConstraints per compose clause. Clauses over one code system version are
+	// separate: a code is included when ANY include clause selects it, and excluded when ANY
+	// exclude clause selects it. Only the filters WITHIN one clause are ANDed.
+	private final Map<FHIRCodeSystemVersion, List<ConjunctionConstraints>> inclusionClauses;
 	private final Set<CodeSelectionCriteria> nestedSelections;
-	private final Map<FHIRCodeSystemVersion, ConjunctionConstraints> exclusionConstraints;
+	private final Map<FHIRCodeSystemVersion, List<ConjunctionConstraints>> exclusionClauses;
 
 	public CodeSelectionCriteria(String valueSetUserRef) {
 		this.valueSetUserRef = valueSetUserRef;
-		inclusionConstraints = new HashMap<>();
+		inclusionClauses = new HashMap<>();
 		nestedSelections = new HashSet<>();
-		exclusionConstraints = new HashMap<>();
+		exclusionClauses = new HashMap<>();
 	}
 
 	public boolean isOnlyInclusionsForOneVersionAndAllSimple() {
-		return CollectionUtils.isEmpty(nestedSelections) && CollectionUtils.isEmpty(exclusionConstraints) && !CollectionUtils.isEmpty(inclusionConstraints)
-				&& inclusionConstraints.keySet().size() == 1 && inclusionConstraints.values().stream().flatMap(conjunctionConstraints -> conjunctionConstraints.constraintsFlattened().stream()).allMatch(ConceptConstraint::isSimpleCodeSet);
+		return CollectionUtils.isEmpty(nestedSelections) && CollectionUtils.isEmpty(exclusionClauses) && !CollectionUtils.isEmpty(inclusionClauses)
+				&& inclusionClauses.keySet().size() == 1 && getInclusionConstraints().values().stream().flatMap(conjunctionConstraints -> conjunctionConstraints.constraintsFlattened().stream()).allMatch(ConceptConstraint::isSimpleCodeSet);
 	}
 
+	/** Starts a new include clause over this version and returns it. */
 	public ConjunctionConstraints addInclusion(FHIRCodeSystemVersion codeSystemVersion) {
-		return inclusionConstraints.computeIfAbsent(codeSystemVersion, v -> new ConjunctionConstraints());
+		ConjunctionConstraints clause = new ConjunctionConstraints();
+		inclusionClauses.computeIfAbsent(codeSystemVersion, v -> new ArrayList<>()).add(clause);
+		return clause;
 	}
 
 	public void addNested(CodeSelectionCriteria nestedCriteria) {
 		nestedSelections.add(nestedCriteria);
 	}
 
+	/** Starts a new exclude clause over this version and returns it. */
 	public ConjunctionConstraints addExclusion(FHIRCodeSystemVersion codeSystemVersion) {
-		return exclusionConstraints.computeIfAbsent(codeSystemVersion, v -> new ConjunctionConstraints());
+		ConjunctionConstraints clause = new ConjunctionConstraints();
+		exclusionClauses.computeIfAbsent(codeSystemVersion, v -> new ArrayList<>()).add(clause);
+		return clause;
 	}
 
 	public Set<FHIRCodeSystemVersion> gatherAllInclusionVersions() {
@@ -43,9 +52,9 @@ public class CodeSelectionCriteria {
 	}
 
 	public boolean isAnyECL() {
-		return inclusionConstraints.values().stream()
+		return getInclusionConstraints().values().stream()
 				.flatMap(conjunctionConstraints -> conjunctionConstraints.constraintsFlattened().stream()).anyMatch(ConceptConstraint::hasEcl) ||
-				exclusionConstraints.values().stream().flatMap(conjunctionConstraints -> conjunctionConstraints.constraintsFlattened().stream()).anyMatch(ConceptConstraint::hasEcl) ||
+				getExclusionConstraints().values().stream().flatMap(conjunctionConstraints -> conjunctionConstraints.constraintsFlattened().stream()).anyMatch(ConceptConstraint::hasEcl) ||
 				nestedSelections.stream().anyMatch(CodeSelectionCriteria::isAnyECL);
 	}
 
@@ -53,20 +62,45 @@ public class CodeSelectionCriteria {
 		return valueSetUserRef;
 	}
 
+	/**
+	 * Every include clause's constraints per version, merged into one ConjunctionConstraints. The
+	 * merge ANDs clauses together, so it is only correct for callers that flatten the constraints
+	 * (the SNOMED paths, which OR everything) or read the versions; a caller that evaluates the
+	 * AND/OR structure must use {@link #getInclusionClauses()}.
+	 */
 	public Map<FHIRCodeSystemVersion, ConjunctionConstraints> getInclusionConstraints() {
-		return inclusionConstraints;
+		return merge(inclusionClauses);
+	}
+
+	public Map<FHIRCodeSystemVersion, List<ConjunctionConstraints>> getInclusionClauses() {
+		return inclusionClauses;
+	}
+
+	public Map<FHIRCodeSystemVersion, List<ConjunctionConstraints>> getExclusionClauses() {
+		return exclusionClauses;
+	}
+
+	private static Map<FHIRCodeSystemVersion, ConjunctionConstraints> merge(Map<FHIRCodeSystemVersion, List<ConjunctionConstraints>> clauses) {
+		Map<FHIRCodeSystemVersion, ConjunctionConstraints> merged = new HashMap<>();
+		clauses.forEach((version, list) -> {
+			ConjunctionConstraints all = new ConjunctionConstraints();
+			list.forEach(clause -> clause.getDisjunctionConstraints().forEach(d -> all.addDisjunctionConstraints(d.getConstraints())));
+			merged.put(version, all);
+		});
+		return merged;
 	}
 
 	public Set<CodeSelectionCriteria> getNestedSelections() {
 		return nestedSelections;
 	}
 
+	/** As {@link #getInclusionConstraints()}, for exclude clauses. */
 	public Map<FHIRCodeSystemVersion, ConjunctionConstraints> getExclusionConstraints() {
-		return exclusionConstraints;
+		return merge(exclusionClauses);
 	}
 
 	private Set<FHIRCodeSystemVersion> doGatherAllInclusionVersions(Set<FHIRCodeSystemVersion> versions) {
-		versions.addAll(inclusionConstraints.keySet());
+		versions.addAll(inclusionClauses.keySet());
 		for (CodeSelectionCriteria nestedSelection : nestedSelections) {
 			nestedSelection.doGatherAllInclusionVersions(versions);
 		}
@@ -78,11 +112,11 @@ public class CodeSelectionCriteria {
 		if (this == o) return true;
 		if (o == null || getClass() != o.getClass()) return false;
 		CodeSelectionCriteria that = (CodeSelectionCriteria) o;
-		return Objects.equals(valueSetUserRef, that.valueSetUserRef) && Objects.equals(inclusionConstraints, that.inclusionConstraints) && Objects.equals(nestedSelections, that.nestedSelections) && Objects.equals(exclusionConstraints, that.exclusionConstraints);
+		return Objects.equals(valueSetUserRef, that.valueSetUserRef) && Objects.equals(inclusionClauses, that.inclusionClauses) && Objects.equals(nestedSelections, that.nestedSelections) && Objects.equals(exclusionClauses, that.exclusionClauses);
 	}
 
 	@Override
 	public int hashCode() {
-		return Objects.hash(valueSetUserRef, inclusionConstraints, nestedSelections, exclusionConstraints);
+		return Objects.hash(valueSetUserRef, inclusionClauses, nestedSelections, exclusionClauses);
 	}
 }
