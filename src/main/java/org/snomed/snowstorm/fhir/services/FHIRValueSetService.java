@@ -432,43 +432,35 @@ public class FHIRValueSetService implements FHIRConstants {
 	}
 
 	// Uses the Elasticsearch search-after feature to paginate past the 10k limit to the requested non-SNOMED page.
+	// Walks the same order as the from/size path above, and keeps the concepts it walks rather than their codes:
+	// reloading by code re-sorted the page and, with two systems sharing a code, returned both for either.
 	private Page<FHIRConcept> loadFhirConceptsPageWithSearchAfter(BoolQuery fhirConceptQuery, PageRequest pageRequest,
 			int offsetRequested, int limitRequested) {
-		SearchAfterPage<String> previousPage = null;
-		List<String> allConceptCodes = new ArrayList<>();
-		boolean loadedAll = false;
-		int totalResults = 0;
-		while (allConceptCodes.size() < limitRequested && !loadedAll) {
-			PageRequest largePageRequest;
+		SearchAfterPage<FHIRConcept> previousPage = null;
+		List<FHIRConcept> window = new ArrayList<>();
+		int walked = 0;
+		long totalResults = 0;
+		while (walked < limitRequested) {
+			int pageSize = Math.min(limitRequested - walked, LARGE_PAGE.getPageSize());
+			PageRequest largePageRequest = previousPage == null
+					? PageRequest.of(0, pageSize)
+					: SearchAfterPageRequest.of(previousPage.getSearchAfter(), pageSize, Sort.unsorted());
+			SearchAfterPage<FHIRConcept> page = conceptService.findConceptsAfter(fhirConceptQuery, largePageRequest);
 			if (previousPage == null) {
-				largePageRequest = PageRequest.of(0, LARGE_PAGE.getPageSize(), pageRequest.getSort());
-			} else {
-				int pageSize = Math.min(limitRequested - allConceptCodes.size(), LARGE_PAGE.getPageSize());
-				largePageRequest = SearchAfterPageRequest.of(previousPage.getSearchAfter(), pageSize, previousPage.getSort());
+				totalResults = page.getTotalElements();
 			}
-			SearchAfterPage<String> page = conceptService.findConceptCodes(fhirConceptQuery, largePageRequest);
-			allConceptCodes.addAll(page.getContent());
-			loadedAll = page.getNumberOfElements() < largePageRequest.getPageSize();
-			if (previousPage == null) {
-				// Collect results total
-				totalResults = (int) page.getTotalElements();
+			for (FHIRConcept concept : page.getContent()) {
+				if (walked >= offsetRequested) {
+					window.add(concept);
+				}
+				walked++;
+			}
+			if (page.getNumberOfElements() < pageSize) {
+				break;
 			}
 			previousPage = page;
 		}
-		List<String> conceptsToLoad;
-		if (allConceptCodes.size() > offsetRequested) {
-			conceptsToLoad = new ArrayList<>(allConceptCodes).subList(offsetRequested, Math.min(limitRequested, allConceptCodes.size()));
-		} else {
-			conceptsToLoad = new ArrayList<>();
-		}
-		if (!conceptsToLoad.isEmpty()) {
-			BoolQuery.Builder conceptsToLoadQuery = bool()
-					.must(fhirConceptQuery._toQuery())
-					.must(termsQuery(FHIRConcept.Fields.CODE, conceptsToLoad));
-			Page<FHIRConcept> conceptsPage = conceptService.findConcepts(conceptsToLoadQuery, LARGE_PAGE);
-			return new PageImpl<>(conceptsPage.getContent(), pageRequest, totalResults);
-		}
-		return new PageImpl<>(new ArrayList<>(), pageRequest, totalResults);
+		return new PageImpl<>(window, pageRequest, totalResults);
 	}
 
 	// Deduplicate inclusion versions by ID (multiple includes may resolve to the same version, e.g. after force-system-version).
