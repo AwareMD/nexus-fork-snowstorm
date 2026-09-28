@@ -530,7 +530,7 @@ public class FHIRCodeSystemService implements TxResourceAware {
 
 	private FHIRCodeSystemVersion findNonSnomedVersionFromRepository(String id, String urlParam, String versionParam) {
 		if (id != null) {
-			return codeSystemRepository.findFirstByIdOrderByVersionDesc(id).orElse(null);
+			return codeSystemRepository.findById(id).orElse(null);
 		}
 		if (versionParam != null && urlParam != null) {
 			if (isWildcardVersion(versionParam)) {
@@ -711,7 +711,7 @@ public class FHIRCodeSystemService implements TxResourceAware {
 	}
 
 	public Optional<FHIRCodeSystemVersion> findById(String id) {
-		return codeSystemRepository.findFirstByIdOrderByVersionDesc(id);
+		return codeSystemRepository.findById(id);
 	}
 
 	public void deleteCodeSystemVersion(FHIRCodeSystemVersion codeSystemVersion) {
