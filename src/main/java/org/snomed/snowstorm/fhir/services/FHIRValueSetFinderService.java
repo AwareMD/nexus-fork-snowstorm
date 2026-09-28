@@ -344,8 +344,12 @@ public class FHIRValueSetFinderService implements FHIRConstants, TxResourceAware
 	}
 
 	private boolean isCodeIncludedInCriteria(String code, FHIRCodeSystemVersion version, CodeSelectionCriteria criteria) {
-		ConjunctionConstraints conjunctionConstraints = criteria.getInclusionConstraints().get(version);
-		if (conjunctionConstraints == null) return false;
+		List<ConjunctionConstraints> clauses = criteria.getInclusionClauses().get(version);
+		if (clauses == null) return false;
+		return clauses.stream().anyMatch(clause -> isCodeIncludedInClause(code, clause));
+	}
+
+	private boolean isCodeIncludedInClause(String code, ConjunctionConstraints conjunctionConstraints) {
 		if (conjunctionConstraints.isEmpty()) return true;
 		for (ConjunctionConstraints.DisjunctionConstraints disjunctionConstraints : conjunctionConstraints.getDisjunctionConstraints()) {
 			boolean orSatisfied = disjunctionConstraints.getConstraints().stream().anyMatch(constraint -> {
@@ -456,14 +460,14 @@ public class FHIRValueSetFinderService implements FHIRConstants, TxResourceAware
 
 		// Attempt to combine value set constraints to reduce the required Elasticsearch clause count.
 		// (Some LOINC nested value sets exceed the default 1024 clause limit).
-		Map<FHIRCodeSystemVersion, ConjunctionConstraints> inclusionConstraints = constraintsService.combineConstraints(codeSelectionCriteria.getInclusionConstraints());
 		Set<CodeSelectionCriteria> nestedSelections = constraintsService.combineConstraints(codeSelectionCriteria.getNestedSelections(), codeSelectionCriteria.getValueSetUserRef());
-		Map<FHIRCodeSystemVersion, ConjunctionConstraints> exclusionConstraints = codeSelectionCriteria.getExclusionConstraints();
 
-		// Inclusions
-		for (Map.Entry<FHIRCodeSystemVersion, ConjunctionConstraints> versionInclusionConstraints : inclusionConstraints.entrySet()) {
-			BoolQuery.Builder versionQueryBuilder = getInclusionQueryBuilder(versionInclusionConstraints, codeSelectionCriteria.getValueSetUserRef());
-			valueSetQuery.should(versionQueryBuilder.build()._toQuery());// Must match at least one of these
+		// Inclusions: one clause per compose include, any of which may select a code.
+		for (Map.Entry<FHIRCodeSystemVersion, List<ConjunctionConstraints>> versionClauses : codeSelectionCriteria.getInclusionClauses().entrySet()) {
+			for (ConjunctionConstraints clause : versionClauses.getValue()) {
+				BoolQuery.Builder versionQueryBuilder = getInclusionQueryBuilder(Map.entry(versionClauses.getKey(), constraintsService.combineConstraints(clause)), codeSelectionCriteria.getValueSetUserRef());
+				valueSetQuery.should(versionQueryBuilder.build()._toQuery());// Must match at least one of these
+			}
 		}
 
 		// Nested value sets
@@ -472,10 +476,12 @@ public class FHIRValueSetFinderService implements FHIRConstants, TxResourceAware
 			valueSetQuery.should(nestedQueryBuilder.build()._toQuery());// Must match at least one of these
 		}
 
-		// Exclusions
-		for (Map.Entry<FHIRCodeSystemVersion, ConjunctionConstraints> versionExclusionConstraints : exclusionConstraints.entrySet()) {
-			BoolQuery.Builder versionQueryBuilder = getInclusionQueryBuilder(versionExclusionConstraints, codeSelectionCriteria.getValueSetUserRef());
-			valueSetQuery.mustNot(versionQueryBuilder.build()._toQuery());
+		// Exclusions: each compose exclude removes what it selects on its own.
+		for (Map.Entry<FHIRCodeSystemVersion, List<ConjunctionConstraints>> versionClauses : codeSelectionCriteria.getExclusionClauses().entrySet()) {
+			for (ConjunctionConstraints clause : versionClauses.getValue()) {
+				BoolQuery.Builder versionQueryBuilder = getInclusionQueryBuilder(Map.entry(versionClauses.getKey(), clause), codeSelectionCriteria.getValueSetUserRef());
+				valueSetQuery.mustNot(versionQueryBuilder.build()._toQuery());
+			}
 		}
 
 		return valueSetQuery;

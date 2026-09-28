@@ -913,8 +913,15 @@ public class FHIRValueSetService implements FHIRConstants {
 		}
 		Set<String> allInlineCodes = allDefs.stream().map(CodeSystem.ConceptDefinitionComponent::getCode).collect(Collectors.toSet());
 
-		final Set<String> finalIncludedCodes = computeInlineIncludedCodes(
-				codeSelectionCriteria.getInclusionConstraints().get(version), allInlineCodes, codeToAncestors);
+		// Any include clause may select a code; a clause that leaves everything unconstrained selects all.
+		Set<String> unionOfClauses = new HashSet<>();
+		boolean anyClauseSelectsAll = false;
+		for (ConjunctionConstraints clause : codeSelectionCriteria.getInclusionClauses().getOrDefault(version, List.of())) {
+			Set<String> selected = computeInlineIncludedCodes(clause, allInlineCodes, codeToAncestors);
+			if (selected == null) anyClauseSelectsAll = true;
+			else unionOfClauses.addAll(selected);
+		}
+		final Set<String> finalIncludedCodes = anyClauseSelectsAll || !codeSelectionCriteria.getInclusionClauses().containsKey(version) ? null : unionOfClauses;
 		Set<String> excludedCodes = computeInlineExcludedCodes(codeSelectionCriteria.getExclusionConstraints().get(version));
 
 		List<FHIRConcept> concepts = new ArrayList<>();
